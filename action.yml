@@ -1,0 +1,104 @@
+name: 'Repository Script Runner'
+description: 'Clones a repository, runs a script, and stores results in releases'
+
+inputs:
+  user_repo:
+    description: 'Full repository path (e.g., owner/repo-name)'
+    required: true
+  branch:
+    description: 'Branch name'
+    required: true
+  cache_key:
+    description: 'Release key for storing results'
+    required: true
+  script_path:
+    description: 'Path to the script to execute (relative to repository root)'
+    required: true
+  github_token:
+    description: 'GitHub token for authentication'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  release_key_used:
+    description: 'The release key that was used'
+    value: ${{ inputs.cache_key }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout current repository
+      uses: actions/checkout@v4
+
+    - name: Clone target repository
+      shell: bash
+      run: |
+        echo "Cloning repository: ${{ inputs.user_repo }}"
+        echo "Branch: ${{ inputs.branch }}"
+
+        # Use GitHub token for private repositories if provided
+        if [ "${{ inputs.github_token }}" != "" ]; then
+          git clone --depth 1 --branch ${{ inputs.branch }} \
+            https://${{ inputs.github_token }}@github.com/${{ inputs.user_repo }}.git \
+            target-repo
+        else
+          git clone --depth 1 --branch ${{ inputs.branch }} \
+            https://github.com/${{ inputs.user_repo }}.git \
+            target-repo
+        fi
+
+    - name: Verify script exists
+      shell: bash
+      run: |
+        if [ ! -f "target-repo/${{ inputs.script_path }}" ]; then
+          echo "Error: Script not found at target-repo/${{ inputs.script_path }}"
+          ls -la target-repo/
+          exit 1
+        fi
+
+    - name: Download from release
+      id: download-release
+      shell: bash
+      run: |
+        release_url="https://github.com/ci_libraries_prebuild_macos/releases/download/${{ inputs.cache_key }}/build-results.tar.gz"
+        
+        if curl -f -L -o build-results.tar.gz "$release_url" 2>/dev/null; then
+          tar -xzf build-results.tar.gz -C target-repo/ 2>/dev/null || {
+            echo "Failed to extract, will rebuild"
+            echo "found=false" >> $GITHUB_OUTPUT
+            exit 0
+          }
+          echo "found=true" >> $GITHUB_OUTPUT
+          rm -f build-results.tar.gz
+        else
+          echo "found=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Make script executable
+      shell: bash
+      run: chmod +x ./target-repo/${{ inputs.script_path }}
+
+    - name: Run the script
+      shell: bash
+      run: |
+        if [ "${{ steps.download-release.outputs.found }}" != "true" ]; then
+          ./${{ inputs.script_path }} skip-release silent
+        fi
+
+    - name: Upload results to release
+      id: upload-results
+      shell: bash
+      run: |
+        if [ "${{ steps.download-release.outputs.found }}" != "true" ]; then
+          if [ -d "Libraries" ] || [ -d "ThirdParty" ]; then
+            tar -czf ../build-results.tar.gz Libraries ThirdParty 2>/dev/null || exit 0
+            cd ..
+            gh release create "${{ inputs.cache_key }}" build-results.tar.gz \
+              --repo ci_libraries_prebuild_macos \
+              --title "${{ inputs.cache_key }}" \
+              --notes "Build for ${{ inputs.cache_key }}" || true
+          fi
+        fi
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+

@@ -1,0 +1,23 @@
+name: Cleanup Old Cache
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old cache releases
+        shell: bash
+        run: |
+          # Get releases older than 7 days
+          gh api repos/ci_libraries_prebuild_macos/releases \
+            --jq '.[] | select(.tag_name | startswith("cache-")) | select((.created_at | fromdateiso8601) < (now - 604800)) | .tag_name' \
+            | while read tag; do
+              echo "Deleting old cache release: $tag"
+              gh release delete "$tag" --repo ci_libraries_prebuild_macos --yes || true
+            done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
